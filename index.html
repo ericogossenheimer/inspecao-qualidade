@@ -8,6 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
+<script src="https://accounts.google.com/gsi/client" async></script>
 <style>:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Inspeção Qualidade</title>
 </head>
@@ -101,6 +102,15 @@ h1,h2,h3{font-family:var(--f-display);margin:0;text-wrap:balance}
 .nav button svg{width:22px;height:22px}
 .nav button.on{color:var(--fg);font-weight:600}
 .nav .fab{width:58px;height:58px;border-radius:50%;background:var(--brand);color:#fff;margin-top:-28px;border:4px solid var(--bg);justify-content:center;padding:0;min-width:0}
+.tabs{display:flex;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px}
+.tabs button{flex:1;border:0;background:none;border-radius:9px;padding:9px 6px;font-weight:600;color:var(--muted)}
+.tabs button.on{background:var(--brand);color:#fff}
+.pdfic{width:40px;height:48px;flex:none;border-radius:6px;background:#B42318;color:#fff;display:grid;place-items:center;font:700 11px var(--f-mono)}
+.item .lead{display:flex;align-items:center;gap:12px;min-width:0}
+.sync{display:inline-flex;align-items:center;gap:6px;margin-top:10px;background:#22404C;border:0;color:#CFE0E6;border-radius:20px;padding:6px 12px;font-size:12.5px}
+.sync i{width:8px;height:8px;border-radius:50%;background:#8AA3AE;display:inline-block}
+.sync.ok i{background:#5BD68A}.sync.pend i{background:#F5C26B}.sync.err i{background:#FF8A7A}.sync.run i{background:#7CC4F5}
+.f code{font-family:var(--f-mono);font-size:12px;overflow-wrap:anywhere}
 .toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--brand);color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:9;max-width:calc(100% - 32px);text-align:center}
 .note{font-size:12.5px;color:var(--muted)}
 .sheet{position:fixed;inset:0;background:rgba(10,20,25,.55);display:flex;align-items:flex-end;justify-content:center;z-index:8}
@@ -112,6 +122,7 @@ h1,h2,h3{font-family:var(--f-display);margin:0;text-wrap:balance}
 <input type="file" id="camIn" accept="image/*" capture="environment" hidden>
 <input type="file" id="galIn" accept="image/*" multiple hidden>
 <input type="file" id="bkIn" accept=".json,application/json" hidden>
+<input type="file" id="pdfIn" accept="application/pdf,.pdf" multiple hidden>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -155,25 +166,28 @@ const slug=s=>String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A
 function toast(m){document.querySelectorAll(".toast").forEach(x=>x.remove());const t=document.createElement("div");t.className="toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2600)}
 
 /* ---------- Armazenamento no aparelho (IndexedDB) ---------- */
-let S={clients:[],equips:[],insps:[],cfg:{inspetor:"Erico",seq:{}}};
+let S={clients:[],equips:[],insps:[],projetos:[],deleted:{},cfg:{inspetor:"Erico",seq:{}}};
+let LC={cid:"",trash:[],last:0,ok:false};let SYNC={st:"",msg:""};
 const mem={photos:{}}; let idb=null;
 function openDB(){return new Promise(r=>{try{const q=indexedDB.open("voltex-qc",1);q.onupgradeneeded=()=>{q.result.createObjectStore("kv");q.result.createObjectStore("photos")};q.onsuccess=()=>r(q.result);q.onerror=()=>r(null)}catch(e){r(null)}})}
 function tx(store,mode,fn){return new Promise(r=>{if(!idb)return r(null);try{const t=idb.transaction(store,mode);const req=fn(t.objectStore(store));t.oncomplete=()=>r(req&&req.result);t.onerror=()=>r(null)}catch(e){r(null)}})}
-let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(()=>tx("kv","readwrite",s=>s.put(JSON.stringify(S),"state")),300)}
+let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(()=>tx("kv","readwrite",s=>s.put(JSON.stringify(S),"state")),300);agendaSync()}
+function saveLC(){tx("kv","readwrite",s=>s.put(JSON.stringify(LC),"local"))}
 async function putPhoto(id,blob){mem.photos[id]=blob;await tx("photos","readwrite",s=>s.put(blob,id))}
 async function getPhoto(id){if(mem.photos[id])return mem.photos[id];const b=await tx("photos","readonly",s=>s.get(id));if(b)mem.photos[id]=b;return b}
+function apagaArq(o){S.deleted=S.deleted||{};S.deleted[o.id]=Date.now();if(o.driveId){LC.trash.push(o.driveId);saveLC()}delPhoto(o.id)}
 function delPhoto(id){delete mem.photos[id];if(urls[id]){URL.revokeObjectURL(urls[id]);delete urls[id]}tx("photos","readwrite",s=>s.delete(id))}
 const urls={};async function photoURL(id){if(urls[id])return urls[id];const b=await getPhoto(id);if(!b)return"";return urls[id]=URL.createObjectURL(b)}
 
 /* ---------- Exemplo inicial ---------- */
 function seed(){
-  const c={id:uid(),nome:"Águia",exemplo:true};
-  const e={id:uid(),clientId:c.id,tag:"TQ-01",serie:"VTX-2610-01",desc:"Reservatório 10 m³ aço carbono",exemplo:true};
+  const c={id:"ex-cli",nome:"Águia",exemplo:true};
+  const e={id:"ex-eq",clientId:c.id,tag:"TQ-01",serie:"VTX-2610-01",desc:"Reservatório 10 m³ aço carbono",exemplo:true};
   S.clients.push(c);S.equips.push(e);
-  S.insps.push({id:uid(),equipId:e.id,tipo:"TI",data:hoje(),num:"VTX-ET-0001",exemplo:true,
+  S.insps.push({id:"ex-ti",equipId:e.id,tipo:"TI",data:hoje(),num:"VTX-ET-0001",exemplo:true,
     f:{aparelho:"Medidor de camada",cert:"CAL-0000",camada:"Total (fundo + acabamento)",superficie:"Externa",esp_min:"240",esp_max:"400"},
     med:[{ponto:"Costado P1",valor:"286"},{ponto:"Costado P2",valor:"301"},{ponto:"Costado P3",valor:"274"},{ponto:"Teto P1",valor:"259"}],fotos:[],obs:"Dados de exemplo para demonstração.",override:""});
-  S.insps.push({id:uid(),equipId:e.id,tipo:"LP",data:hoje(),num:"VTX-LP-0001",exemplo:true,
+  S.insps.push({id:"ex-lp",equipId:e.id,tipo:"LP",data:hoje(),num:"VTX-LP-0001",exemplo:true,
     f:{norma:"ASME Sec. V Art. 6",regiao:"Solda circunferencial costado/fundo",t_pen:"10",t_rev:"10",indic:""},med:[],fotos:[],obs:"",override:""});
   S.cfg.seq={ET:1,LP:1};
 }
@@ -230,7 +244,7 @@ const ICON={
 function nav(){const a=V.name;const b=(k,lab,ic)=>`<button class="${a===k?"on":""}" data-go="${k}">${ICON[ic]}${lab}</button>`;
  return`<nav class="nav"><div class="nav-in">${b("home","Início","home")}${b("clients","Clientes","cli")}<button class="fab" data-act="nova" aria-label="Nova inspeção">${ICON.cam}</button>${b("all","Inspeções","rel")}${b("cfg","Ajustes","cfg")}</div></nav>`}
 function head(title,sub,back){
- if(!back)return`<header class="hd"><div class="hd-row"><div><h1>${esc(title)}</h1>${sub?`<p>${esc(sub)}</p>`:""}</div><img class="logo" src="${LOGO}" alt="Voltex Soluções Industriais"></div>${V.name==="home"?`<input class="search" id="q" placeholder="Buscar cliente, TAG ou nº de série" value="${esc(q)}">`:""}</header>`;
+ if(!back)return`<header class="hd"><div class="hd-row"><div><h1>${esc(title)}</h1>${sub?`<p>${esc(sub)}</p>`:""}</div><img class="logo" src="${LOGO}" alt="Voltex Soluções Industriais"></div>${V.name==="home"&&IS_PWA&&LC.cid?syncChip():""}${V.name==="home"?`<input class="search" id="q" placeholder="Buscar cliente, TAG ou nº de série" value="${esc(q)}">`:""}</header>`;
  return`<header class="hd sub"><div class="hd-row"><button class="back" data-back aria-label="Voltar">←</button><div style="flex:1;min-width:0"><h1>${esc(title)}</h1>${sub?`<p>${esc(sub)}</p>`:""}</div><img class="logo" style="height:28px" src="${LOGO}" alt="Voltex"></div></header>`}
 
 function inspItem(i){const e=eqOf(i),c=clOf(e),t=TYPES[i.tipo],a=avalia(i);
@@ -249,8 +263,16 @@ function vHome(){
  <div class="lbl">${q?"Resultado da busca":"Inspeções recentes"}</div>
  <div class="list">${rec.slice(0,q?50:6).map(inspItem).join("")||'<div class="empty">Nenhuma inspeção encontrada.</div>'}</div></main>`}
 
-function vAll(){const l=[...S.insps].sort((a,b)=>(b.data||"").localeCompare(a.data||""));
- return head("Inspeções","Todas as inspeções salvas neste celular")+`<main class="wrap"><div class="list">${l.map(inspItem).join("")||'<div class="empty">Nenhuma inspeção ainda.</div>'}</div></main>`}
+const fmtMB=n=>(n/1048576).toFixed(n<1048576?2:1).replace(".",",")+" MB";
+function projItem(p,mostraEq){const e=S.equips.find(x=>x.id===p.equipId)||{},c=clOf(e);
+ return`<button class="item" data-proj="${p.id}"><div class="lead"><div class="pdfic">PDF</div><div class="t"><b style="overflow-wrap:anywhere">${esc(p.nome)}</b><span>${mostraEq?esc(c.nome)+" · "+esc(e.tag)+" · ":""}${fmtMB(p.tam||0)} · ${fmtData(p.data)}${p.driveId?" · no Drive":""}</span></div></div><span aria-hidden="true">›</span></button>`}
+function vAll(){const tab=V.tab||"insp";const l=[...S.insps].sort((a,b)=>(b.data||"").localeCompare(a.data||""));
+ const pj=[...(S.projetos||[])].sort((a,b)=>(b.upd||0)-(a.upd||0));
+ const tabs=`<div class="tabs" role="tablist"><button class="${tab==="insp"?"on":""}" data-tab="insp">Inspeções (${l.length})</button><button class="${tab==="proj"?"on":""}" data-tab="proj">Projetos PDF (${pj.length})</button></div>`;
+ if(tab==="proj")return head("Projetos","Desenhos e projetos em PDF por equipamento")+`<main class="wrap">${tabs}
+ <button class="btn pri" data-act="addProj">+ Adicionar projeto (PDF)</button>
+ <div class="list">${pj.map(p=>projItem(p,1)).join("")||'<div class="empty">Nenhum projeto ainda. Toque em "Adicionar projeto" e escolha o equipamento e o arquivo PDF.</div>'}</div></main>`;
+ return head("Inspeções","Todas as inspeções e projetos")+`<main class="wrap">${tabs}<div class="list">${l.map(inspItem).join("")||'<div class="empty">Nenhuma inspeção ainda.</div>'}</div></main>`}
 
 function vClients(){
  return head("Clientes","Cliente → Equipamento → Ensaio")+`<main class="wrap">
@@ -273,6 +295,9 @@ function vEquip(){const e=S.equips.find(x=>x.id===V.id);if(!e)return go({name:"c
  <div class="grid">${ORDER.map(k=>`<button class="tile" data-act="novoEq" data-tipo="${k}" data-e="${e.id}"><div class="ic" style="background:${TYPES[k].cor}">${TYPES[k].sig}</div>${TYPES[k].nome.replace(" ","<br>")}</button>`).join("")}</div>
  <div class="lbl">Ensaios realizados</div>
  <div class="list">${l.map(inspItem).join("")||'<div class="empty">Nenhum ensaio ainda.</div>'}</div>
+ <div class="lbl">Projeto (PDF)</div>
+ <div class="list">${(S.projetos||[]).filter(p=>p.equipId===e.id).map(p=>projItem(p,0)).join("")||'<div class="empty">Nenhum PDF de projeto neste equipamento.</div>'}</div>
+ <button class="btn" data-act="addProjEq" data-e="${e.id}">+ Adicionar PDF do projeto</button>
  <button class="btn acc" data-act="zipEq" data-e="${e.id}" ${nf?"":"disabled"}>Exportar ZIP com todas as fotos (${nf})</button>
  <button class="btn dng" data-act="delEq" data-e="${e.id}">Excluir equipamento</button></main>`}
 
@@ -311,10 +336,11 @@ function vCfg(){return head("Ajustes","Dados usados nos relatórios")+`<main cla
  <div class="card"><div class="f"><label for="c_ins">Nome do inspetor</label><input id="c_ins" data-cfg="inspetor" value="${esc(S.cfg.inspetor)}"></div>
  <div class="f"><label for="c_reg">Qualificação / registro (opcional)</label><input id="c_reg" data-cfg="registro" value="${esc(S.cfg.registro)}"></div></div>
  ${IS_PWA&&instalar?'<button class="btn acc" data-act="instalar">Instalar app na tela inicial</button>':""}
- <div class="card"><h3>Backup dos dados</h3><p class="note" style="margin:0">Gera um arquivo com todas as inspeções e fotos. Use para guardar no PC ou para passar os dados para outro celular ou para o app instalado.</p>
+ ${IS_PWA?cardDrive():""}
+ <div class="card"><h3>Backup dos dados</h3><p class="note" style="margin:0">Gera um arquivo com todas as inspeções, fotos e projetos. Use para guardar no PC ou para passar os dados para outro celular ou para o app instalado.</p>
  <div class="row"><button class="btn pri" data-act="bk">Fazer backup</button><button class="btn" data-act="rest">Restaurar backup</button></div></div>
- <div class="card"><h3>Sobre esta versão</h3><p class="note" style="margin:0">Versão 0.3${IS_PWA?" (app instalável)":""}. Os dados ficam salvos somente neste celular. Faça backup ou exporte PDF e ZIP com frequência.</p>
- <div class="stats">${S.clients.length} cliente(s) · ${S.equips.length} equipamento(s) · ${S.insps.length} inspeção(ões) · ${S.insps.reduce((a,i)=>a+i.fotos.length,0)} foto(s)</div></div>
+ <div class="card"><h3>Sobre esta versão</h3><p class="note" style="margin:0">Versão 0.4${IS_PWA?" (app instalável)":""}. ${IS_PWA&&LC.cid?"Os dados ficam neste aparelho e são sincronizados com a pasta Voltex Qualidade do seu Google Drive.":"Os dados ficam salvos somente neste aparelho. Faça backup ou exporte PDF e ZIP com frequência."}</p>
+ <div class="stats">${S.clients.length} cliente(s) · ${S.equips.length} equipamento(s) · ${S.insps.length} inspeção(ões) · ${S.insps.reduce((a,i)=>a+i.fotos.length,0)} foto(s) · ${(S.projetos||[]).length} projeto(s)</div></div>
  ${S.clients.some(c=>c.exemplo)?'<button class="btn dng" data-act="delEx">Apagar dados de exemplo</button>':""}</main>`}
 
 function vNova(){const pre=V.tipo||"";
@@ -349,24 +375,33 @@ document.addEventListener("click",async ev=>{
  if(d.open)return go({name:"insp",id:d.open});
  if(d.cli)return go({name:"client",id:d.cli});
  if(d.eq)return go({name:"equip",id:d.eq});
+ if(d.tab){V.tab=d.tab;return render()}
+ if(d.proj)return abrirProj(d.proj);
  if(d.delm!==undefined){const i=curI();i.med.splice(+d.delm,1);i.upd=Date.now();save();return render()}
- if(d.delp!==undefined){const i=curI();if(!confirmar("p"+d.delp,b,"Excluir?"))return;const[p]=i.fotos.splice(+d.delp,1);delPhoto(p.id);save();return render()}
+ if(d.delp!==undefined){const i=curI();if(!confirmar("p"+d.delp,b,"Excluir?"))return;const[p]=i.fotos.splice(+d.delp,1);apagaArq(p);i.upd=Date.now();save();return render()}
  const a=d.act;if(!a)return;
  if(a==="nova"){if(V.name==="equip")return go({name:"nova",cli:clOf(S.equips.find(e=>e.id===V.id)).id,eq:V.id,tipo:d.tipo});return go({name:"nova",tipo:d.tipo})}
  if(a==="novoEq")return novaInsp(d.e,d.tipo);
  if(a==="criar"){let cid=$("#n_cli").value;
-  if(cid==="__new"){const n=$("#n_cliNome").value.trim();if(!n)return toast("Informe o nome do cliente");const c={id:uid(),nome:n};S.clients.push(c);cid=c.id}
+  if(cid==="__new"){const n=$("#n_cliNome").value.trim();if(!n)return toast("Informe o nome do cliente");const c={id:uid(),nome:n,upd:Date.now()};S.clients.push(c);cid=c.id}
   let eid=$("#n_eq").value;
-  if(eid==="__new"||!eid){const tag=$("#n_tag").value.trim();if(!tag)return toast("Informe a TAG do equipamento");const e={id:uid(),clientId:cid,tag,serie:$("#n_serie").value.trim(),desc:$("#n_desc").value.trim()};S.equips.push(e);eid=e.id}
+  if(eid==="__new"||!eid){const tag=$("#n_tag").value.trim();if(!tag)return toast("Informe a TAG do equipamento");const e={id:uid(),clientId:cid,tag,serie:$("#n_serie").value.trim(),desc:$("#n_desc").value.trim(),upd:Date.now()};S.equips.push(e);eid=e.id}
   return novaInsp(eid,$("#n_tipo").value)}
- if(a==="addCli"){return sheet("Novo cliente",`<div class="f"><label for="s1">Nome do cliente</label><input id="s1" placeholder="Ex.: Águia"></div>`,()=>{const n=$("#s1").value.trim();if(!n)return toast("Informe o nome");S.clients.push({id:uid(),nome:n});save();render();return true})}
- if(a==="addEq"){const cid=d.c;return sheet("Novo equipamento",`<div class="two"><div class="f"><label for="s1">TAG</label><input id="s1" placeholder="TQ-01"></div><div class="f"><label for="s2">Nº de série</label><input id="s2"></div></div><div class="f"><label for="s3">Descrição</label><input id="s3" placeholder="Reservatório 10 m³"></div>`,()=>{const tag=$("#s1").value.trim();if(!tag)return toast("Informe a TAG");S.equips.push({id:uid(),clientId:cid,tag,serie:$("#s2").value.trim(),desc:$("#s3").value.trim()});save();render();return true})}
+ if(a==="addCli"){return sheet("Novo cliente",`<div class="f"><label for="s1">Nome do cliente</label><input id="s1" placeholder="Ex.: Águia"></div>`,()=>{const n=$("#s1").value.trim();if(!n)return toast("Informe o nome");S.clients.push({id:uid(),nome:n,upd:Date.now()});save();render();return true})}
+ if(a==="addEq"){const cid=d.c;return sheet("Novo equipamento",`<div class="two"><div class="f"><label for="s1">TAG</label><input id="s1" placeholder="TQ-01"></div><div class="f"><label for="s2">Nº de série</label><input id="s2"></div></div><div class="f"><label for="s3">Descrição</label><input id="s3" placeholder="Reservatório 10 m³"></div>`,()=>{const tag=$("#s1").value.trim();if(!tag)return toast("Informe a TAG");S.equips.push({id:uid(),clientId:cid,tag,serie:$("#s2").value.trim(),desc:$("#s3").value.trim(),upd:Date.now()});save();render();return true})}
  if(a==="delCli"){if(!confirmar("c",b,"Toque de novo para excluir cliente e tudo dele"))return;delCliente(d.c);return go({name:"clients"})}
  if(a==="delEq"){if(!confirmar("e",b,"Toque de novo para excluir equipamento e ensaios"))return;const e=S.equips.find(x=>x.id===d.e);delEquip(d.e);return go({name:"client",id:e.clientId})}
- if(a==="delI"){if(!confirmar("i",b,"Toque de novo para excluir esta inspeção"))return;const i=curI();i.fotos.forEach(p=>delPhoto(p.id));S.insps=S.insps.filter(x=>x!==i);save();return go({name:"equip",id:i.equipId})}
+ if(a==="delI"){if(!confirmar("i",b,"Toque de novo para excluir esta inspeção"))return;const i=curI();i.fotos.forEach(apagaArq);S.deleted[i.id]=Date.now();S.insps=S.insps.filter(x=>x!==i);save();return go({name:"equip",id:i.equipId})}
  if(a==="delEx"){if(!confirmar("x",b,"Toque de novo para apagar os exemplos"))return;S.clients.filter(c=>c.exemplo).forEach(c=>delCliente(c.id));save();toast("Exemplos apagados");return render()}
  if(a==="addM"){const i=curI(),t=TYPES[i.tipo];i.med.push(t.med.novo(i.med.length));save();render();const ins=document.querySelectorAll(`[data-m="${i.med.length-1}"]`);ins[ins.length-1]?.focus();return}
  if(a==="bk")return exportBackup(b);
+ if(a==="addProjEq"){projEq=d.e;return $("#pdfIn").click()}
+ if(a==="addProj"){if(!S.equips.length)return toast("Cadastre primeiro um cliente e um equipamento");
+  return sheet("Adicionar projeto (PDF)",`<div class="f"><label for="pj_eq">Equipamento</label><select id="pj_eq">${S.equips.map(e=>`<option value="${e.id}">${esc(clOf(e).nome)} · ${esc(e.tag)}${e.desc?" · "+esc(e.desc):""}</option>`).join("")}</select></div><p class="note" style="margin:0">Depois de tocar em "Escolher PDF", selecione o arquivo do projeto.</p>`,()=>{projEq=$("#pj_eq").value;$("#pdfIn").click();return true},"Escolher PDF")}
+ if(a==="sync")return sincronizar(true);
+ if(a==="cidDel"){if(!confirmar("cid",b,"Toque de novo para trocar o ID"))return;LC.cid="";LC.ok=false;TK={t:"",exp:0};try{localStorage.removeItem("vtx-tk")}catch(e){}saveLC();return render()}
+ if(a==="cid"){const v=($("#c_cid")?.value||"").trim();if(v&&!/\.apps\.googleusercontent\.com$/.test(v))return toast("O ID deve terminar em .apps.googleusercontent.com");LC.cid=v;LC.ok=false;saveLC();toast(v?"ID salvo. Toque em Conectar ao Google Drive":"ID removido");return render()}
+ if(a==="desc"){try{if(TK.t&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(TK.t,()=>{})}catch(e){}TK={t:"",exp:0};try{localStorage.removeItem("vtx-tk")}catch(e){}LC.ok=false;saveLC();SYNC={st:"",msg:""};toast("Google Drive desconectado");return render()}
  if(a==="rest")return $("#bkIn").click();
  if(a==="instalar"){if(!instalar)return;instalar.prompt();try{await instalar.userChoice}catch(e){}instalar=null;return render()}
  if(a==="cam")return $("#camIn").click();
@@ -375,16 +410,16 @@ document.addEventListener("click",async ev=>{
  if(a==="zip")return exportZipInsp(curI(),b);
  if(a==="zipEq")return exportZipEq(d.e,b);
 });
-function delEquip(eid){S.insps.filter(i=>i.equipId===eid).forEach(i=>i.fotos.forEach(p=>delPhoto(p.id)));S.insps=S.insps.filter(i=>i.equipId!==eid);S.equips=S.equips.filter(e=>e.id!==eid);save()}
-function delCliente(cid){S.equips.filter(e=>e.clientId===cid).forEach(e=>delEquip(e.id));S.clients=S.clients.filter(c=>c.id!==cid);save()}
-function sheet(title,body,ok){const w=document.createElement("div");w.className="sheet";w.innerHTML=`<div class="card"><h3>${title}</h3>${body}<div class="row"><button class="btn" data-x>Cancelar</button><button class="btn pri" data-ok>Salvar</button></div></div>`;
+function delEquip(eid){S.deleted=S.deleted||{};const now=Date.now();S.insps.filter(i=>i.equipId===eid).forEach(i=>{i.fotos.forEach(apagaArq);S.deleted[i.id]=now});(S.projetos||[]).filter(p=>p.equipId===eid).forEach(apagaArq);S.insps=S.insps.filter(i=>i.equipId!==eid);S.projetos=(S.projetos||[]).filter(p=>p.equipId!==eid);S.deleted[eid]=now;S.equips=S.equips.filter(e=>e.id!==eid);save()}
+function delCliente(cid){S.equips.filter(e=>e.clientId===cid).forEach(e=>delEquip(e.id));S.deleted[cid]=Date.now();S.clients=S.clients.filter(c=>c.id!==cid);save()}
+function sheet(title,body,ok,okLbl){const w=document.createElement("div");w.className="sheet";w.innerHTML=`<div class="card"><h3>${title}</h3>${body}<div class="row"><button class="btn" data-x>Cancelar</button><button class="btn pri" data-ok>${okLbl||"Salvar"}</button></div></div>`;
  document.body.appendChild(w);w.querySelector("input")?.focus();
  w.addEventListener("click",e=>{if(e.target===w||e.target.closest("[data-x]"))w.remove();if(e.target.closest("[data-ok]")){if(ok())w.remove()}})}
 
 document.addEventListener("input",ev=>{const el=ev.target,d=el.dataset;
  if(el.id==="q"){q=el.value;const pos=el.selectionStart;render();const n=$("#q");n.focus();n.setSelectionRange(pos,pos);return}
  if(d.cfg){S.cfg[d.cfg]=el.value;return save()}
- if(d.eqf){const e=S.equips.find(x=>x.id===V.id);e[d.eqf]=el.value;return save()}
+ if(d.eqf){const e=S.equips.find(x=>x.id===V.id);e[d.eqf]=el.value;e.upd=Date.now();return save()}
  const i=curI();if(!i)return;i.upd=Date.now();
  if(d.f){i.f[d.f]=el.value}else if(d.top){i[d.top]=el.value}else if(d.m!==undefined){i.med[+d.m][d.mk]=el.value;const st=$("#st"+d.m);if(st)st.innerHTML=stTxt(pontoStatus(i,i.med[+d.m]))}else if(d.leg!==undefined){i.fotos[+d.leg].leg=el.value}else return;
  if(d.f||d.top==="override"){i.med.forEach((r,ri)=>{const st=$("#st"+ri);if(st)st.innerHTML=stTxt(pontoStatus(i,r))})}
@@ -488,6 +523,7 @@ async function buildPDF(i){
 /* ---------- Backup ---------- */
 async function exportBackup(b){const done=busy(b,"Gerando backup…");
  try{const photos={};for(const i of S.insps)for(const p of i.fotos){const bl=await getPhoto(p.id);if(bl)photos[p.id]=await blobToDataURL(bl)}
+ for(const p of S.projetos||[]){const bl=await getPhoto(p.id);if(bl)photos[p.id]=await blobToDataURL(bl)}
  const str=JSON.stringify({app:"voltex-qc",v:1,data:new Date().toISOString(),S,photos});done();
  await salvarArquivo(`backup_inspecao_${hoje()}.json`,new Blob([str],{type:"application/json"}))}catch(e){done();toast("Erro ao gerar backup")}}
 function dataURLtoBlob(u){const k=u.indexOf(",");const mime=(u.slice(0,k).match(/data:([^;]+)/)||[])[1]||"image/jpeg";const bin=atob(u.slice(k+1));const arr=new Uint8Array(bin.length);for(let j=0;j<bin.length;j++)arr[j]=bin.charCodeAt(j);return new Blob([arr],{type:mime})}
@@ -495,14 +531,129 @@ $("#bkIn").addEventListener("change",async e=>{const f=e.target.files[0];e.targe
  try{bk=JSON.parse(await f.text())}catch(err){return toast("Arquivo de backup inválido")}
  if(!bk||bk.app!=="voltex-qc"||!bk.S||!Array.isArray(bk.S.insps))return toast("Este arquivo não é um backup do app");
  const np=Object.keys(bk.photos||{}).length;
- const w=document.createElement("div");w.className="sheet";w.innerHTML=`<div class="card"><h3>Restaurar backup?</h3><p class="note" style="margin:0">O backup tem ${bk.S.clients.length} cliente(s), ${bk.S.insps.length} inspeção(ões) e ${np} foto(s). Os dados atuais deste celular (${S.insps.length} inspeção(ões)) serão substituídos.</p><div class="row"><button class="btn" data-x>Cancelar</button><button class="btn pri" data-ok>Restaurar</button></div></div>`;
+ const w=document.createElement("div");w.className="sheet";w.innerHTML=`<div class="card"><h3>Restaurar backup?</h3><p class="note" style="margin:0">O backup tem ${bk.S.clients.length} cliente(s), ${bk.S.insps.length} inspeção(ões), ${(bk.S.projetos||[]).length} projeto(s) e ${np} arquivo(s). Os dados atuais deste celular (${S.insps.length} inspeção(ões)) serão substituídos.</p><div class="row"><button class="btn" data-x>Cancelar</button><button class="btn pri" data-ok>Restaurar</button></div></div>`;
  document.body.appendChild(w);
  w.addEventListener("click",async ev=>{if(ev.target===w||ev.target.closest("[data-x]"))return w.remove();
   if(!ev.target.closest("[data-ok]"))return;w.remove();toast("Restaurando…");
   try{for(const id of Object.keys(urls)){URL.revokeObjectURL(urls[id]);delete urls[id]}mem.photos={};await tx("photos","readwrite",st=>st.clear());
   for(const[id,u]of Object.entries(bk.photos||{}))await putPhoto(id,dataURLtoBlob(u));
-  S=Object.assign({clients:[],equips:[],insps:[],cfg:{inspetor:"",seq:{}}},bk.S);clearTimeout(saveT);await tx("kv","readwrite",st=>st.put(JSON.stringify(S),"state"));
+  S=Object.assign({clients:[],equips:[],insps:[],projetos:[],deleted:{},cfg:{inspetor:"",seq:{}}},bk.S);clearTimeout(saveT);await tx("kv","readwrite",st=>st.put(JSON.stringify(S),"state"));
   toast("Backup restaurado");go({name:"home"})}catch(err){toast("Erro ao restaurar o backup")}})});
+
+/* ---------- Projetos em PDF ---------- */
+let projEq=null;
+$("#pdfIn").addEventListener("change",async e=>{const fs=[...e.target.files];e.target.value="";if(!fs.length||!projEq)return;let n=0;
+ for(const f of fs){if(!/pdf$/i.test(f.type)&&!/\.pdf$/i.test(f.name)){toast("Escolha um arquivo PDF");continue}
+  const id=uid();const blob=new Blob([await f.arrayBuffer()],{type:"application/pdf"});await putPhoto(id,blob);
+  S.projetos.push({id,equipId:projEq,nome:f.name.replace(/\.pdf$/i,""),tam:f.size,data:hoje(),upd:Date.now()});n++}
+ save();toast(n+" PDF(s) adicionado(s)");const eid=projEq;projEq=null;if(V.name==="equip"||V.name==="all")render();else go({name:"equip",id:eid})});
+async function abrirProj(id){const p=(S.projetos||[]).find(x=>x.id===id);if(!p)return;const e=S.equips.find(x=>x.id===p.equipId)||{},c=clOf(e);
+ const bl=await getPhoto(p.id);const drive=p.driveId?`https://drive.google.com/file/d/${p.driveId}/view`:"";
+ const w=document.createElement("div");w.className="sheet";w.innerHTML=`<div class="card"><h3 style="overflow-wrap:anywhere">${esc(p.nome)}</h3><div class="note">${esc(c.nome)} · ${esc(e.tag)} · ${fmtMB(p.tam||0)} · adicionado em ${fmtData(p.data)}</div>
+ <div style="display:flex;flex-direction:column;gap:8px">${bl?'<button class="btn pri" data-ab>Abrir PDF</button><button class="btn" data-sv>Salvar / enviar</button>':'<div class="empty">O arquivo ainda não está neste aparelho. Sincronize com o Google Drive para baixá-lo.</div>'}
+ ${drive?`<a class="btn" style="text-align:center;text-decoration:none;color:inherit" href="${drive}" target="_blank" rel="noopener">Abrir no Google Drive</a>`:""}
+ <button class="btn" data-eqv>Ver equipamento</button><button class="btn dng" data-del>Excluir projeto</button><button class="btn" data-x>Fechar</button></div></div>`;
+ document.body.appendChild(w);let conf=0;
+ w.addEventListener("click",ev=>{const t=ev.target;if(t===w||t.closest("[data-x]"))return w.remove();
+  if(t.closest("[data-ab]")){const u=URL.createObjectURL(bl);const a=document.createElement("a");a.href=u;a.target="_blank";a.rel="noopener";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),120000)}
+  if(t.closest("[data-sv]")){w.remove();salvarArquivo(slug(c.nome)+"_"+slug(e.tag)+"_"+p.nome.replace(/[^\w\-. ]+/g,"_")+".pdf",bl)}
+  if(t.closest("[data-eqv]")){w.remove();go({name:"equip",id:p.equipId})}
+  if(t.closest("[data-del]")){if(!conf){conf=1;t.closest("[data-del]").textContent="Toque de novo para excluir";return}
+   apagaArq(p);S.projetos=S.projetos.filter(x=>x!==p);save();w.remove();render();toast("Projeto excluído")}})}
+
+/* ---------- Sincronização com Google Drive ---------- */
+let TK={t:"",exp:0},tkClient=null,syncing=false,syncAgain=false,syncT=null;
+const tokOk=()=>!!TK.t&&TK.exp>Date.now()+60000;
+const DAPI="https://www.googleapis.com/drive/v3",UAPI="https://www.googleapis.com/upload/drive/v3",ROOT="Voltex Qualidade";
+function pedirToken(){return new Promise((res,rej)=>{
+ if(!window.google?.accounts?.oauth2)return rej(new Error("Não foi possível carregar o login do Google. Verifique a internet."));
+ if(!tkClient||tkClient._cid!==LC.cid){tkClient=google.accounts.oauth2.initTokenClient({client_id:LC.cid,scope:"https://www.googleapis.com/auth/drive.file",callback:()=>{}});tkClient._cid=LC.cid}
+ tkClient.callback=r=>{if(r.error)return rej(new Error(r.error_description||r.error));TK={t:r.access_token,exp:Date.now()+(+r.expires_in||3600)*1000};try{localStorage.setItem("vtx-tk",JSON.stringify(TK))}catch(e){}res(TK.t)};
+ tkClient.error_callback=e=>rej(new Error(e?.type==="popup_closed"?"Login cancelado":"Não foi possível abrir o login do Google"));
+ tkClient.requestAccessToken({prompt:LC.ok?"":"consent"})})}
+async function gf(url,opt={}){const r=await fetch(url,{...opt,headers:{...(opt.headers||{}),Authorization:"Bearer "+TK.t}});
+ if(r.status===401){TK={t:"",exp:0};throw new Error("Login expirado. Toque em Sincronizar.")}
+ if(!r.ok){let m="";try{m=(await r.json()).error.message}catch(e){}throw new Error("Google Drive respondeu "+r.status+(m?": "+m:""))}return r}
+const qs=v=>String(v).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+async function dFind(name,parent,folder){const q=[`name='${qs(name)}'`,"trashed=false",`'${parent||"root"}' in parents`];if(folder)q.push("mimeType='application/vnd.google-apps.folder'");
+ const r=await gf(`${DAPI}/files?q=${encodeURIComponent(q.join(" and "))}&fields=files(id,name)&spaces=drive&pageSize=10`);return(await r.json()).files[0]||null}
+const fcache={};
+async function dPasta(name,parent){name=String(name||"-").replace(/[\/\\]/g,"-").trim()||"-";const k=(parent||"root")+"|"+name;if(fcache[k])return fcache[k];
+ let f=await dFind(name,parent,true);
+ if(!f){const r=await gf(`${DAPI}/files?fields=id`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,mimeType:"application/vnd.google-apps.folder",parents:[parent||"root"]})});f=await r.json()}
+ return fcache[k]=f.id}
+async function dEnviar(meta,blob,fileId){const b="vtx"+uid();const body=new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${b}\r\nContent-Type: ${blob.type||"application/octet-stream"}\r\n\r\n`,blob,`\r\n--${b}--`]);
+ const r=await gf(fileId?`${UAPI}/files/${fileId}?uploadType=multipart&fields=id`:`${UAPI}/files?uploadType=multipart&fields=id`,{method:fileId?"PATCH":"POST",headers:{"Content-Type":"multipart/related; boundary="+b},body});return(await r.json()).id}
+async function dBaixar(id){return await(await gf(`${DAPI}/files/${id}?alt=media`)).blob()}
+
+function juntaLista(a,b,del,ehInsp){const m=new Map();
+ for(const x of[...a,...b]){const o=m.get(x.id);if(!o){m.set(x.id,x);continue}
+  const[w,l]=(x.upd||0)>(o.upd||0)?[x,o]:[o,x];
+  if(ehInsp){const ids=new Set(w.fotos.map(p=>p.id));for(const p of l.fotos||[])if(!ids.has(p.id)&&!del[p.id])w.fotos.push(p);
+   const dr={};for(const p of l.fotos||[])if(p.driveId)dr[p.id]=p.driveId;for(const p of w.fotos)if(!p.driveId&&dr[p.id])p.driveId=dr[p.id]}
+  else if(!w.driveId&&l.driveId)w.driveId=l.driveId;
+  m.set(x.id,w)}
+ return[...m.values()].filter(x=>!(del[x.id]&&del[x.id]>=(x.upd||0)))}
+function juntaEstado(R){const del={...(S.deleted||{})};for(const[k,v]of Object.entries(R.deleted||{}))del[k]=Math.max(del[k]||0,v);
+ const corte=Date.now()-180*864e5;for(const k in del)if(del[k]<corte)delete del[k];S.deleted=del;
+ S.clients=juntaLista(S.clients||[],R.clients||[],del);S.equips=juntaLista(S.equips||[],R.equips||[],del);
+ S.insps=juntaLista(S.insps||[],R.insps||[],del,1);S.projetos=juntaLista(S.projetos||[],R.projetos||[],del);
+ for(const i of S.insps)i.fotos=i.fotos.filter(p=>!del[p.id]);
+ const seq={...(R.cfg?.seq||{})};for(const[k,v]of Object.entries(S.cfg.seq||{}))seq[k]=Math.max(seq[k]||0,v);S.cfg.seq=seq;
+ if(!S.cfg.inspetor&&R.cfg?.inspetor)S.cfg.inspetor=R.cfg.inspetor;if(!S.cfg.registro&&R.cfg?.registro)S.cfg.registro=R.cfg.registro}
+
+function setSync(st,msg){SYNC={st,msg:msg||""};const el=document.querySelector(".sync");if(el)el.outerHTML=syncChip();const c=document.getElementById("driveSt");if(c)c.innerHTML=driveStTxt()}
+function driveStTxt(){const h=LC.last?new Date(LC.last).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
+ return SYNC.st==="run"?"Sincronizando…":SYNC.st==="err"?"Erro: "+esc(SYNC.msg):SYNC.st==="pend"?"Alterações aguardando sincronização. Toque em Sincronizar.":SYNC.st==="off"?"Sem internet. Sincroniza quando a conexão voltar.":h?"Sincronizado em "+h:"Ainda não sincronizado"}
+function syncChip(){const c={ok:"ok",pend:"pend",err:"err",run:"run",off:"pend"}[SYNC.st]||(LC.last?"ok":"pend");
+ const t=SYNC.st==="run"?"Sincronizando…":SYNC.st==="err"?"Erro ao sincronizar · tocar":SYNC.st==="pend"||SYNC.st==="off"||!LC.last?"Google Drive · tocar para sincronizar":"Drive sincronizado "+new Date(LC.last).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+ return`<button class="sync ${c}" data-act="sync"><i></i>${t}</button>`}
+function cardDrive(){
+ if(!LC.cid)return`<div class="card"><h3>Google Drive</h3><p class="note" style="margin:0">Sincroniza inspeções, fotos e projetos entre o celular e o computador, e guarda tudo na pasta <b>Voltex Qualidade</b> do seu Google Drive. Para ativar, cole o ID do cliente OAuth criado no Google Cloud.</p>
+ <div class="f"><label for="c_cid">ID do cliente (termina em .apps.googleusercontent.com)</label><input id="c_cid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="123456-abc.apps.googleusercontent.com"></div>
+ <button class="btn pri" data-act="cid">Salvar ID</button></div>`;
+ return`<div class="card"><h3>Google Drive</h3><div class="note" id="driveSt">${driveStTxt()}</div>
+ <div class="row"><button class="btn pri" data-act="sync">${LC.ok?"Sincronizar agora":"Conectar ao Google Drive"}</button>${LC.ok?'<button class="btn" data-act="desc">Desconectar</button>':""}</div>
+ <div class="f"><label>ID do cliente</label><code>${esc(LC.cid)}</code></div>
+ <button class="btn" data-act="cidDel">Trocar ID do cliente</button></div>`}
+
+function agendaSync(){if(!IS_PWA||!LC.cid)return;clearTimeout(syncT);
+ if(!tokOk()){if(LC.ok&&SYNC.st!=="run")setSync("pend");return}
+ syncT=setTimeout(()=>sincronizar(false),8000)}
+async function sincronizar(interativo){
+ if(!IS_PWA)return;if(!LC.cid){toast("Configure o Google Drive em Ajustes");return go({name:"cfg"})}
+ if(syncing){syncAgain=true;return}
+ if(!navigator.onLine){setSync("off");if(interativo)toast("Sem internet agora");return}
+ clearTimeout(syncT);
+ try{if(!tokOk()){if(!interativo)return setSync("pend");await pedirToken()}
+  if(!LC.ok){LC.ok=true;saveLC()}
+  syncing=true;setSync("run");
+  const root=await dPasta(ROOT,null);
+  const df=await dFind("dados.json",root,false);
+  if(df){const R=await(await gf(`${DAPI}/files/${df.id}?alt=media`)).json();if(R&&R.app==="voltex-qc"&&R.S)juntaEstado(R.S)}
+  // enviar fotos e projetos novos
+  for(const i of S.insps){const e=eqOf(i),c=clOf(e);for(let k=0;k<i.fotos.length;k++){const p=i.fotos[k];if(p.driveId)continue;const bl=await getPhoto(p.id);if(!bl)continue;
+   const pasta=await dPasta(`${TYPES[i.tipo]?.sig||i.tipo} ${i.num||""}`.trim(),await dPasta(e.tag||"sem TAG",await dPasta(c.nome||"sem cliente",root)));
+   p.driveId=await dEnviar({name:fotoNome(i,k),parents:[pasta],description:p.leg||""},bl);i.upd=Date.now()}}
+  for(const p of S.projetos){if(p.driveId)continue;const bl=await getPhoto(p.id);if(!bl)continue;const e=S.equips.find(x=>x.id===p.equipId)||{},c=clOf(e);
+   const pasta=await dPasta("Projeto",await dPasta(e.tag||"sem TAG",await dPasta(c.nome||"sem cliente",root)));
+   p.driveId=await dEnviar({name:p.nome+".pdf",parents:[pasta]},bl);p.upd=Date.now()}
+  // baixar o que veio de outro aparelho
+  for(const i of S.insps)for(const p of i.fotos)if(p.driveId&&!(await getPhoto(p.id))){try{await putPhoto(p.id,await dBaixar(p.driveId))}catch(e){}}
+  for(const p of S.projetos)if(p.driveId&&!(await getPhoto(p.id))){try{await putPhoto(p.id,await dBaixar(p.driveId))}catch(e){}}
+  // mandar para a lixeira do Drive o que foi excluído
+  const fica=[];for(const id of LC.trash){try{await gf(`${DAPI}/files/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({trashed:true})})}catch(e){if(!/ 404/.test(e.message))fica.push(id)}}LC.trash=fica;
+  // gravar o estado juntado
+  const js=new Blob([JSON.stringify({app:"voltex-qc",v:2,em:new Date().toISOString(),S})],{type:"application/json"});
+  if(df)await dEnviar({},js,df.id);else await dEnviar({name:"dados.json",parents:[root],description:"Dados do app Inspeção Qualidade. Não apague nem edite."},js);
+  clearTimeout(saveT);await tx("kv","readwrite",s=>s.put(JSON.stringify(S),"state"));
+  LC.last=Date.now();saveLC();syncing=false;setSync("ok");
+  const foco=document.activeElement&&/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);if(!foco)render();
+  if(interativo)toast("Sincronizado com o Google Drive")}
+ catch(e){syncing=false;setSync("err",e.message);if(interativo)toast(e.message)}
+ finally{syncing=false;if(syncAgain){syncAgain=false;setTimeout(()=>sincronizar(false),1500)}}}
+if(IS_PWA){window.addEventListener("online",()=>{if(LC.cid&&tokOk())sincronizar(false)});
+ document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&LC.cid&&tokOk())sincronizar(false)})}
 
 /* ---------- App instalável ---------- */
 if(IS_PWA){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();instalar=e;if(V.name==="cfg"||V.name==="home")render()});
@@ -512,7 +663,10 @@ if(IS_PWA){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();
 
 (async()=>{idb=await openDB();const raw=await tx("kv","readonly",s=>s.get("state"));
  if(raw){try{S=Object.assign(S,JSON.parse(raw))}catch(e){}}else{seed();save()}
- render()})();
+ S.projetos=S.projetos||[];S.deleted=S.deleted||{};
+ const lr=await tx("kv","readonly",s=>s.get("local"));if(lr){try{LC=Object.assign(LC,JSON.parse(lr))}catch(e){}}
+ try{const t=JSON.parse(localStorage.getItem("vtx-tk")||"null");if(t&&t.exp>Date.now()+120000)TK=t}catch(e){}
+ render();if(IS_PWA&&LC.cid&&tokOk())sincronizar(false);else if(IS_PWA&&LC.cid){SYNC={st:"pend",msg:""};render()}})();
 render();
 </script>
 </body>
