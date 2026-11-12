@@ -167,6 +167,7 @@ function toast(m){document.querySelectorAll(".toast").forEach(x=>x.remove());con
 
 /* ---------- Armazenamento no aparelho (IndexedDB) ---------- */
 let S={clients:[],equips:[],insps:[],projetos:[],deleted:{},cfg:{inspetor:"Erico",seq:{}}};
+const CID_PADRAO="770274307334-e0aofapskkfvjltflnubc412f73hjl55.apps.googleusercontent.com";
 let LC={cid:"",trash:[],last:0,ok:false};let SYNC={st:"",msg:""};
 const mem={photos:{}}; let idb=null;
 function openDB(){return new Promise(r=>{try{const q=indexedDB.open("voltex-qc",1);q.onupgradeneeded=()=>{q.result.createObjectStore("kv");q.result.createObjectStore("photos")};q.onsuccess=()=>r(q.result);q.onerror=()=>r(null)}catch(e){r(null)}})}
@@ -399,8 +400,8 @@ document.addEventListener("click",async ev=>{
  if(a==="addProj"){if(!S.equips.length)return toast("Cadastre primeiro um cliente e um equipamento");
   return sheet("Adicionar projeto (PDF)",`<div class="f"><label for="pj_eq">Equipamento</label><select id="pj_eq">${S.equips.map(e=>`<option value="${e.id}">${esc(clOf(e).nome)} · ${esc(e.tag)}${e.desc?" · "+esc(e.desc):""}</option>`).join("")}</select></div><p class="note" style="margin:0">Depois de tocar em "Escolher PDF", selecione o arquivo do projeto.</p>`,()=>{projEq=$("#pj_eq").value;$("#pdfIn").click();return true},"Escolher PDF")}
  if(a==="sync")return sincronizar(true);
- if(a==="cidDel"){if(!confirmar("cid",b,"Toque de novo para trocar o ID"))return;LC.cid="";LC.ok=false;TK={t:"",exp:0};try{localStorage.removeItem("vtx-tk")}catch(e){}saveLC();return render()}
- if(a==="cid"){const v=($("#c_cid")?.value||"").trim();if(v&&!/\.apps\.googleusercontent\.com$/.test(v))return toast("O ID deve terminar em .apps.googleusercontent.com");LC.cid=v;LC.ok=false;saveLC();toast(v?"ID salvo. Toque em Conectar ao Google Drive":"ID removido");return render()}
+ if(a==="cidDel"){if(!confirmar("cid",b,"Toque de novo para trocar o ID"))return;LC.cid="";LC.semCid=true;LC.ok=false;TK={t:"",exp:0};try{localStorage.removeItem("vtx-tk")}catch(e){}saveLC();return render()}
+ if(a==="cid"){const v=($("#c_cid")?.value||"").trim();if(v&&!/\.apps\.googleusercontent\.com$/.test(v))return toast("O ID deve terminar em .apps.googleusercontent.com");LC.cid=v;LC.semCid=!v;LC.ok=false;saveLC();toast(v?"ID salvo. Toque em Conectar ao Google Drive":"ID removido");return render()}
  if(a==="desc"){try{if(TK.t&&window.google?.accounts?.oauth2)google.accounts.oauth2.revoke(TK.t,()=>{})}catch(e){}TK={t:"",exp:0};try{localStorage.removeItem("vtx-tk")}catch(e){}LC.ok=false;saveLC();SYNC={st:"",msg:""};toast("Google Drive desconectado");return render()}
  if(a==="rest")return $("#bkIn").click();
  if(a==="instalar"){if(!instalar)return;instalar.prompt();try{await instalar.userChoice}catch(e){}instalar=null;return render()}
@@ -468,7 +469,7 @@ async function exportZipEq(eid,b){if(!window.JSZip)return toast("Biblioteca de Z
  const out=await z.generateAsync({type:"blob"});done();await salvarArquivo(`${slug(c.nome)}_${slug(e.tag)}_fotos.zip`,out)}catch(err){done();toast("Erro ao gerar ZIP")}}
 
 async function exportPDF(i,b){if(!window.jspdf)return toast("Biblioteca de PDF não carregou. Verifique a internet.");const done=busy(b,"Gerando PDF…");
- try{const blob=await buildPDF(i);const e=eqOf(i),c=clOf(e);done();await salvarArquivo(`${slug(c.nome)}_${slug(e.tag)}_${TYPES[i.tipo].sig}_relatorio.pdf`,blob)}catch(err){console.error(err);done();toast("Erro ao gerar PDF")}}
+ try{const blob=await buildPDF(i);const e=eqOf(i),c=clOf(e);done();const nomeRel=`${slug(c.nome)}_${slug(e.tag)}_${TYPES[i.tipo].sig}_${slug(i.num)}_relatorio.pdf`;enviaRelatorio(i,blob,nomeRel);await salvarArquivo(nomeRel,blob)}catch(err){console.error(err);done();toast("Erro ao gerar PDF")}}
 
 async function buildPDF(i){
  const{jsPDF}=window.jspdf;const doc=new jsPDF({unit:"mm",format:"a4"});const _t=doc.text.bind(doc);const fx=v=>typeof v==="string"?v.replace(/µ/g,"u").replace(/²/g,"2").replace(/³/g,"3").replace(/→/g,">"):Array.isArray(v)?v.map(fx):v;doc.text=(v,...r)=>_t(fx(v),...r);const W=210,M=12,CW=W-2*M;const t=TYPES[i.tipo],e=eqOf(i),c=clOf(e),a=avalia(i);
@@ -615,6 +616,7 @@ function cardDrive(){
  return`<div class="card"><h3>Google Drive</h3><div class="note" id="driveSt">${driveStTxt()}</div>
  <div class="row"><button class="btn pri" data-act="sync">${LC.ok?"Sincronizar agora":"Conectar ao Google Drive"}</button>${LC.ok?'<button class="btn" data-act="desc">Desconectar</button>':""}</div>
  <div class="f"><label>ID do cliente</label><code>${esc(LC.cid)}</code></div>
+ <p class="note" style="margin:0">Fotos, projetos e os relatórios PDF que você exportar ficam na pasta <b>Voltex Qualidade</b> do Google Drive, separados por Cliente → TAG → Ensaio.</p>
  <button class="btn" data-act="cidDel">Trocar ID do cliente</button></div>`}
 
 function agendaSync(){if(!IS_PWA||!LC.cid)return;clearTimeout(syncT);
@@ -655,6 +657,12 @@ async function sincronizar(interativo){
 if(IS_PWA){window.addEventListener("online",()=>{if(LC.cid&&tokOk())sincronizar(false)});
  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&LC.cid&&tokOk())sincronizar(false)})}
 
+async function enviaRelatorio(i,blob,nome,tent){if(!IS_PWA||!LC.cid||!tokOk()||!navigator.onLine)return;
+ try{const e=eqOf(i),c=clOf(e);const root=await dPasta(ROOT,null);
+  const pasta=await dPasta(`${TYPES[i.tipo]?.sig||i.tipo} ${i.num||""}`.trim(),await dPasta(e.tag||"sem TAG",await dPasta(c.nome||"sem cliente",root)));
+  i.relDriveId=await dEnviar(i.relDriveId?{name:nome}:{name:nome,parents:[pasta]},blob,i.relDriveId);i.upd=Date.now();save();toast("Relatório também salvo no Google Drive")}
+ catch(err){if(i.relDriveId&&!tent&&/ 404/.test(err.message)){i.relDriveId="";return enviaRelatorio(i,blob,nome,1)}}}
+
 /* ---------- App instalável ---------- */
 if(IS_PWA){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();instalar=e;if(V.name==="cfg"||V.name==="home")render()});
  window.addEventListener("appinstalled",()=>{instalar=null;toast("App instalado");render()});
@@ -665,6 +673,7 @@ if(IS_PWA){window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();
  if(raw){try{S=Object.assign(S,JSON.parse(raw))}catch(e){}}else{seed();save()}
  S.projetos=S.projetos||[];S.deleted=S.deleted||{};
  const lr=await tx("kv","readonly",s=>s.get("local"));if(lr){try{LC=Object.assign(LC,JSON.parse(lr))}catch(e){}}
+ if(IS_PWA&&!LC.cid&&!LC.semCid)LC.cid=CID_PADRAO;
  try{const t=JSON.parse(localStorage.getItem("vtx-tk")||"null");if(t&&t.exp>Date.now()+120000)TK=t}catch(e){}
  render();if(IS_PWA&&LC.cid&&tokOk())sincronizar(false);else if(IS_PWA&&LC.cid){SYNC={st:"pend",msg:""};render()}})();
 render();
